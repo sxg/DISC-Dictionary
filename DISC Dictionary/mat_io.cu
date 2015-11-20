@@ -21,6 +21,34 @@ mxArray *matGetMatrixInFile(const char *fileName, const char *matrixName) {
 	return matrix;
 }
 
+mxArray *matGetColInMatrix(const mxArray *matrix, const int colIdx) {
+	double *matrixData = mxGetPr(matrix);
+	int numRows = mxGetM(matrix);
+	int numCols = mxGetN(matrix);
+	double *matrixColData = (double *)mxMalloc(sizeof(double) * numRows);
+	for (int i = colIdx * numRows; i < colIdx * numRows + numRows; i++) {
+		matrixColData[i % numCols] = matrixData[i];
+	}
+	
+	mxArray *matrixCol = mxCreateDoubleMatrix(numRows, 1, mxREAL);
+	mxSetPr(matrixCol, matrixColData);
+	return matrixCol;
+}
+
+mxArray *matGetRowInMatrix(const mxArray *matrix, const int rowIdx) {
+	double *matrixData = mxGetPr(matrix);
+	int numRows = mxGetM(matrix);
+	int numCols = mxGetN(matrix);
+	double *matrixRowData = (double *)mxMalloc(sizeof(double) * numCols);
+	for (int i = rowIdx; i < numRows * numCols; i += numRows) {
+		matrixRowData[i / numRows] = matrixData[i];
+	}
+
+	mxArray *matrixRow = mxCreateDoubleMatrix(1, numCols, mxREAL);
+	mxSetPr(matrixRow, matrixRowData);
+	return matrixRow;
+}
+
 mxArray *hdf5GetArrayFromFile(const char *fileName, const char *matrixName) {
 	hid_t file_id = H5Fopen(fileName, H5F_ACC_RDWR, H5P_DEFAULT);
 	hid_t dataset_id = H5Dopen2(file_id, matrixName, H5P_DEFAULT);

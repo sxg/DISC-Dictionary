@@ -2,6 +2,8 @@
 
 //	Reading
 mxArray *matGetMatrixInFile(const char *fileName, const char *matrixName);
+mxArray *matGetColInMatrix(const mxArray *matrix, const int colIdx);
+mxArray *matGetRowInMatrix(const mxArray *matrix, const int rowIdx);
 mxArray *hdf5GetArrayFromFile(const char *fileName, const char *matrixName);
 
 //	Writing
