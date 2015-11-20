@@ -34,8 +34,7 @@ mxArray *hdf5GetArrayFromFile(const char *fileName, const char *matrixName) {
 	H5Dclose(dataset_id);
 
 	mxArray *matrix = mxCreateDoubleMatrix(dims[1], dims[0], mxREAL);
-	double *matrixData = mxGetPr(matrix);
-	memcpy(matrixData, dset_data, dims[1] * dims[0] * sizeof(double));
+	mxSetData(matrix, dset_data);
 	return matrix;
 }
 
