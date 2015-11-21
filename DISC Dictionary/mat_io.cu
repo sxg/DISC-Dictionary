@@ -27,7 +27,7 @@ mxArray *matGetColInMatrix(const mxArray *matrix, const int colIdx) {
 	int numCols = mxGetN(matrix);
 	double *matrixColData = (double *)mxMalloc(sizeof(double) * numRows);
 	for (int i = colIdx * numRows; i < colIdx * numRows + numRows; i++) {
-		matrixColData[i % numCols] = matrixData[i];
+		matrixColData[i % numRows] = matrixData[i];
 	}
 	
 	mxArray *matrixCol = mxCreateDoubleMatrix(numRows, 1, mxREAL);
