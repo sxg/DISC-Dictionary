@@ -31,15 +31,12 @@ double *artConc(const mxArray *artFrac) {
 	//	Calculate S0b
 	int numRows = mxGetM(artFrac);
 	const double *artFracData = mxGetPr(artFrac);
-	double baseFrameArtFrac = artFracData[BASE_FRAME];
-	double S0b = baseFrameArtFrac * ((1.0f - exp(-1.0f * R10b * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10b * TR)) / sin(ALPHA));
+	double S0b = artFracData[BASE_FRAME] * ((1.0f - exp(-1.0f * R10b * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10b * TR)) / sin(ALPHA));
 	
 	//	Calculate R1b
 	double *R1b = new double[numRows];
 	for (int i = 0; i < numRows; i++) {
-		R1b[i] = (S0b * sin(ALPHA)) - (artFracData[i] * cos(ALPHA));
-		R1b[i] /= (S0b * sin(ALPHA) - artFracData[i]);
-		R1b[i] /= TR;
+		R1b[i] = log10( ( (S0b * sin(ALPHA)) - (artFracData[i] * cos(ALPHA)) ) / (S0b * sin(ALPHA) - artFracData[i]) ) / TR;
 	}
 	
 	//	Calculate Cb_artery
@@ -55,6 +52,33 @@ double *artConc(const mxArray *artFrac) {
 	}
 
 	return Cb_plasma;
+}
+
+double *pvConc(const mxArray *pv) {
+	//	Calculate S0p
+	int numRows = mxGetM(pv);
+	const double *pvData = mxGetPr(pv);
+	double S0p = pvData[BASE_FRAME] * ((1.0f - exp(-1.0f * R10p * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10p * TR)) / sin(ALPHA));
+
+	//	Calculate R1p
+	double *R1p = new double[numRows];
+	for (int i = 0; i < numRows; i++) {
+		R1p[i] = log10( ( (S0p * sin(ALPHA)) - (pvData[i] * cos(ALPHA)) ) / (S0p * sin(ALPHA) - pvData[i]) ) / TR;
+	}
+
+	//	Calculate Cp_artery
+	double *Cp_artery = new double[numRows];
+	for (int i = 0; i < numRows; i++) {
+		Cp_artery[i] = (R1p[i] - R10p) * 1000.0f / RELAXIVITY;
+	}
+
+	//	Calculate Cp_plasma
+	double *Cp_plasma = new double[numRows];
+	for (int i = 0; i < numRows; i++) {
+		Cp_plasma[i] = Cp_artery[i] / (1.0f - HCT);
+	}
+
+	return Cp_plasma;
 }
 
 __global__ void addKernel(int *c, const int *a, const int *b)
