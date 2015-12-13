@@ -1,10 +1,61 @@
-
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include "cublas_v2.h"
 
+#include "mat_io.h"
+
+#define _USE_MATH_DEFINES
+#include <math.h>
 #include <stdio.h>
+#include <string.h>
 
+//	Constants
+const double ALPHA = 15.0f * M_PI / 180.0f;
+const int BASE_FRAME = 3;
+const double TR = 4.54f;
+const double T10b = 1.8f * 1000.0f;
+const double T10p = 1.8f * 1000.0f;
+const double T10L = 0.747f * 1000.0f;
+const double R10b = 1.0f / T10b;
+const double R10p = 1.0f / T10p;
+const double R10L = 1.0f / T10L;
+const double HCT = 0.4f;
+const double RELAXIVITY = 4.5f;
+
+
+//	Helpers
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
+double artConc(const double artFrac);
+
+double *artConc(const mxArray *artFrac) {
+	//	Calculate S0b
+	int numRows = mxGetM(artFrac);
+	const double *artFracData = mxGetPr(artFrac);
+	double baseFrameArtFrac = artFracData[BASE_FRAME];
+	double S0b = baseFrameArtFrac * ((1.0f - exp(-1.0f * R10b * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10b * TR)) / sin(ALPHA));
+	
+	//	Calculate R1b
+	double *R1b = new double[numRows];
+	for (int i = 0; i < numRows; i++) {
+		R1b[i] = (S0b * sin(ALPHA)) - (artFracData[i] * cos(ALPHA));
+		R1b[i] /= (S0b * sin(ALPHA) - artFracData[i]);
+		R1b[i] /= TR;
+	}
+	
+	//	Calculate Cb_artery
+	double *Cb_artery = new double[numRows];
+	for (int i = 0; i < numRows; i++) {
+		Cb_artery[i] = (R1b[i] - R10b) * 1000.0f / RELAXIVITY;
+	}
+
+	//	Calculate Cb_plasma
+	double *Cb_plasma = new double[numRows];
+	for (int i = 0; i < numRows; i++) {
+		Cb_plasma[i] = Cb_artery[i] / (1.0f - HCT);
+	}
+
+	return Cb_plasma;
+}
 
 __global__ void addKernel(int *c, const int *a, const int *b)
 {
@@ -14,28 +65,42 @@ __global__ void addKernel(int *c, const int *a, const int *b)
 
 int main()
 {
-    const int arraySize = 5;
-    const int a[arraySize] = { 1, 2, 3, 4, 5 };
-    const int b[arraySize] = { 10, 20, 30, 40, 50 };
-    int c[arraySize] = { 0 };
+	mxArray *A = matGetMatrixInFile("A.mat", "A");
+	mxArray *B = matGetMatrixInFile("B.mat", "B");
+	mxArray *aCol1 = matGetColInMatrix(A, 0);
 
-    // Add vectors in parallel.
-    cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addWithCuda failed!");
-        return 1;
-    }
+	double *aCol1Data = mxGetPr(aCol1);
+	for (int i = 0; i < mxGetM(aCol1); i++) {
+		printf("%f ", aCol1Data[i]);
+	}
+	
+	artConc(aCol1);
 
-    printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
-        c[0], c[1], c[2], c[3], c[4]);
+	//const int arraySize = 5;
+    //const int a[arraySize] = { 1, 2, 3, 4, 5 };
+    //const int b[arraySize] = { 10, 20, 30, 40, 50 };
+    //int c[arraySize] = { 0 };
 
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceReset failed!");
-        return 1;
-    }
+    //// Add vectors in parallel.
+    //cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
+    //if (cudaStatus != cudaSuccess) {
+    //    fprintf(stderr, "addWithCuda failed!");
+    //    return 1;
+    //}
+
+    //printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
+    //    c[0], c[1], c[2], c[3], c[4]);
+
+    //// cudaDeviceReset must be called before exiting in order for profiling and
+    //// tracing tools such as Nsight and Visual Profiler to show complete traces.
+    //cudaStatus = cudaDeviceReset();
+    //if (cudaStatus != cudaSuccess) {
+    //    fprintf(stderr, "cudaDeviceReset failed!");
+    //    return 1;
+    //}
+
+	//	Pause
+	getchar();
 
     return 0;
 }
