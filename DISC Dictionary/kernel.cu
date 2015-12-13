@@ -81,6 +81,27 @@ double *pvConc(const mxArray *pv) {
 	return Cp_plasma;
 }
 
+double *clearance(const mxArray *liver) {
+	//	Calculate S0L
+	int numRows = mxGetM(liver);
+	const double *liverData = mxGetPr(liver);
+	double S0L = liverData[BASE_FRAME] * ((1.0f - exp(-1.0f * R10L * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10L * TR)) / sin(ALPHA));
+	
+	//	Calculate R1L
+	double *R1L = new double[numRows];
+	for (int i = 0; i < numRows; i++) {
+		R1L[i] = log10(((S0L * sin(ALPHA)) - (liverData[i] * cos(ALPHA))) / (S0L * sin(ALPHA) - liverData[i])) / TR;
+	}
+
+	//	Calculate CL
+	double *CL = new double[numRows];
+	for (int i = 0; i < numRows; i++) {
+		CL[i] = (R1L[i] - R10L) * 1000.0f / RELAXIVITY * 0.2627f;
+	}
+
+	return CL;
+}
+
 __global__ void addKernel(int *c, const int *a, const int *b)
 {
     int i = threadIdx.x;
