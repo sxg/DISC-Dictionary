@@ -23,10 +23,6 @@ const double HCT = 0.4f;
 const double RELAXIVITY = 4.5f;
 
 
-//	Helpers
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
-double artConc(const double artFrac);
-
 double *artConc(const mxArray *artFrac) {
 	//	Calculate S0b
 	int numRows = mxGetM(artFrac);
@@ -102,24 +98,139 @@ double *clearance(const mxArray *liver) {
 	return CL;
 }
 
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-    int i = threadIdx.x;
-    c[i] = a[i] + b[i];
+__device__ double *disc(const double *times, const double *artConc, const double *pvConc, const int n, const double AF, const double DV, const double MTT, const double t1, const double t2) {
+	double k1a = AF * DV / MTT;
+	double k1p = DV * (1.0f - AF) / MTT;
+	double k2 = 1.0f / MTT;
+	double dt = times[1] - times[0];
+	double *C = new double[n];
+
+	for (int i = 0; i < n; i++) {
+		double sum = 0.0f;
+		for (int j = 0; j < i; j++) {
+			double sum1 = 0.0f;
+			if (round(j - t1 * 1000.0f) > 0.0f) {
+				sum1 += k1a * artConc[(int)round(j - t1 * 1000.0f)];
+			}
+
+			if (round(j - t2) > 0.0f) {
+				sum1 += k1p * pvConc[(int)round(j - t2)];
+			}
+
+			sum += sum1 * exp(-1.0f * k2 * (i - j) * dt) * dt;
+		}
+		C[i] = sum;
+	}
+
+	return C;
+}
+
+double *linspace(double start, double end, int n) {
+	double *array = new double[n];
+	double step = (end - start) / (n - 1);
+	for (int i = 0; i < n; i++) {
+		array[i] = start + (i * step);
+	}
+	return array;
+}
+
+int fiveDimIdxToLinIdx(int i, int size_i, int j, int size_j, int k, int size_k, int l, int size_l, int m) {
+	return i + (j * size_i) + (k * size_i * size_j) + (l * size_i * size_j *size_k) + (m * size_i * size_j * size_k * size_l);
+}
+
+__device__ int *linIdxToFiveDimIdx(int idx, int size_i, int size_j, int size_k, int size_l) {
+	int *fiveDimIdx = new int[5];
+
+	//	Get first dim
+	fiveDimIdx[0] = idx % size_i;
+
+	//	Get second dim
+	idx -= fiveDimIdx[0];
+	fiveDimIdx[1] = (idx / size_i) % size_j;
+
+	//	Get third dim
+	idx -= fiveDimIdx[1];
+	fiveDimIdx[2] = (idx / size_j) % size_k;
+
+	//	Get fourth dim
+	idx -= fiveDimIdx[2];
+	fiveDimIdx[3] = (idx / size_k) % size_l;
+
+	//	Get fifth dim
+	idx -= fiveDimIdx[3];
+	fiveDimIdx[4] = idx / size_l;
+
+	return fiveDimIdx;
+}
+
+__global__ void popDict(double **dict, const double *times, const double *artConc, const double *pvConc, const int n, const double *AF, const double *MTT, const double *DV, const double *t1, const double *t2) {
+	int *fiveDimIdx = linIdxToFiveDimIdx(threadIdx.x, 21, 21, 21, 26);
+	double *disc_out = new double[n];
+	disc_out = disc(times, artConc, pvConc, n, AF[fiveDimIdx[0]], MTT[fiveDimIdx[1]], DV[fiveDimIdx[2]], t1[fiveDimIdx[3]], t2[fiveDimIdx[4]]);
+	dict[threadIdx.x] = disc_out;
 }
 
 int main()
 {
-	mxArray *A = matGetMatrixInFile("A.mat", "A");
-	mxArray *B = matGetMatrixInFile("B.mat", "B");
-	mxArray *aCol1 = matGetColInMatrix(A, 0);
+	mxArray *allts = matGetMatrixInFile("data.mat", "allts");
+	mxArray *times = matGetColInMatrix(allts, 0);
+	mxArray *AF = matGetColInMatrix(allts, 1);
+	mxArray *PV = matGetColInMatrix(allts, 2);
+	mxArray *Liver = matGetColInMatrix(allts, 3);
 
-	double *aCol1Data = mxGetPr(aCol1);
-	for (int i = 0; i < mxGetM(aCol1); i++) {
-		printf("%f ", aCol1Data[i]);
-	}
+	int n = mxGetM(times);
+
+	double *timesData = mxGetPr(times);
+	double *Cb_plasma = artConc(AF);
+	double *Cp_plasma = pvConc(PV);
 	
-	artConc(aCol1);
+	double *AF_range = linspace(0.0f, 100.0f, 21);
+	double *MTT_range = linspace(0.0f, 100.0f, 21);
+	double *DV_range = linspace(0.0f, 100.0f, 21);
+	double *t1_range = linspace(0.0f, 5.0f, 26);
+	double *t2_range = linspace(0.0f, 5.0f, 26);
+
+	double **dict = (double **)malloc(sizeof(double *) * 21 * 21 * 21 * 26 * 26);
+
+	double *d_timesData;
+	cudaMalloc(&d_timesData, sizeof(double) * n);
+	cudaMemcpy(d_timesData, timesData, sizeof(double) * n, cudaMemcpyHostToDevice);
+
+	double *d_Cb_plasma, *d_Cp_plasma;
+	cudaMalloc(&d_Cb_plasma, sizeof(double) * n);
+	cudaMalloc(&d_Cp_plasma, sizeof(double) * n);
+	cudaMemcpy(d_Cb_plasma, Cb_plasma, sizeof(double) * n, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_Cp_plasma, Cp_plasma, sizeof(double) * n, cudaMemcpyHostToDevice);
+
+	double *d_AF_range, *d_MTT_range, *d_DV_range, *d_t1_range, *d_t2_range;
+	cudaMalloc(&d_AF_range, sizeof(double) * 21);
+	cudaMalloc(&d_MTT_range, sizeof(double) * 21);
+	cudaMalloc(&d_DV_range, sizeof(double) * 21);
+	cudaMalloc(&d_t1_range, sizeof(double) * 26);
+	cudaMalloc(&d_t2_range, sizeof(double) * 26);
+	cudaMemcpy(d_AF_range, AF_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_MTT_range, MTT_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_DV_range, DV_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_t1_range, t1_range, sizeof(double) * 26, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_t2_range, t2_range, sizeof(double) * 26, cudaMemcpyHostToDevice);
+	
+	double **d_dict;
+	cudaMalloc(&d_dict, sizeof(double *) * 21 * 21 * 21 * 26 * 26);
+
+	popDict<<< 1, 21 * 21 * 21 * 26 * 26 >>>(d_dict, d_timesData, d_Cb_plasma, d_Cp_plasma, n, d_AF_range, d_MTT_range, d_DV_range, d_t1_range, d_t2_range);
+
+	cudaMemcpy(dict, d_dict, sizeof(double *) * 21 * 21 * 21 * 26 * 26, cudaMemcpyDeviceToHost);
+	double *linearDict = (double *)malloc(sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
+	for (int i = 0; i < 21 * 21 * 21 * 26 * 26; i++) {
+		double *timeSeries = dict[i];
+		for (int j = 0; j < n; j++) {
+			double temp = timeSeries[j];
+			linearDict[i * n + j] = temp;
+		}
+	}
+
+	mxArray *linearDictMatrix = mxCreateDoubleMatrix(21 * 21 * 21 * 26 * 26, n, mxREAL);
+	matPutMatrixInFile("Dictionary.mat", "Dictionary", linearDictMatrix);
 
 	//const int arraySize = 5;
     //const int a[arraySize] = { 1, 2, 3, 4, 5 };
@@ -145,7 +256,17 @@ int main()
     //}
 
 	//	Pause
-	getchar();
+	//	getchar();
+
+	cudaFree(d_dict);
+	cudaFree(d_timesData);
+	cudaFree(d_Cb_plasma);
+	cudaFree(d_Cp_plasma);
+	cudaFree(d_AF_range);
+	cudaFree(d_MTT_range);
+	cudaFree(d_DV_range);
+	cudaFree(d_t1_range);
+	cudaFree(d_t2_range);
 
     return 0;
 }
@@ -198,7 +319,7 @@ cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
     }
 
     // Launch a kernel on the GPU with one thread for each element.
-    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
+    //addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
 
     // Check for any errors launching the kernel
     cudaStatus = cudaGetLastError();
