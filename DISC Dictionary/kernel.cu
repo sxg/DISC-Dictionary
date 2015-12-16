@@ -98,7 +98,7 @@ double *clearance(const mxArray *liver) {
 	return CL;
 }
 
-__device__ double *disc(const double *times, const double *artConc, const double *pvConc, const int n, const double AF, const double DV, const double MTT, const double t1, const double t2) {
+__device__ double *disc(const double *times, const double *artConc, const double *pvConc, const int n, const double AF, const double MTT, const double DV, const double t1, const double t2) {
 	double k1a = AF * DV / MTT;
 	double k1p = DV * (1.0f - AF) / MTT;
 	double k2 = 1.0f / MTT;
@@ -134,8 +134,40 @@ double *linspace(double start, double end, int n) {
 	return array;
 }
 
-int fiveDimIdxToLinIdx(int i, int size_i, int j, int size_j, int k, int size_k, int l, int size_l, int m) {
+__device__ int multiDimIdxToLinIdx(int *idxs, int *sizes, int nDims) {
+	int linIdx = 0;
+	for (int i = 0; i < nDims; i++) {
+		int sizeProduct = 1;
+		for (int j = 0; j < i; j++) {
+			sizeProduct *= sizes[j];
+		}
+		linIdx += idxs[i] * sizeProduct;
+	}
+	return linIdx;
+}
+
+__device__ int fiveDimIdxToLinIdx(int i, int size_i, int j, int size_j, int k, int size_k, int l, int size_l, int m) {
 	return i + (j * size_i) + (k * size_i * size_j) + (l * size_i * size_j *size_k) + (m * size_i * size_j * size_k * size_l);
+}
+
+__device__ int *linIdxToMultiDimIdx(int idx, int *sizes, int nDims) {
+	int *multiDimIdx = new int[nDims];
+
+	for (int i = 0; i < nDims; i++) {
+		if (i == 0) {
+			multiDimIdx[i] = idx % sizes[i];
+		}
+		else if (i == nDims - 1) {
+			multiDimIdx[i] = idx / sizes[i - 1];
+		}
+		else {
+			multiDimIdx[i] = (idx / sizes[i - 1]) % sizes[i];
+		}
+
+		idx -= multiDimIdx[i];
+	}
+
+	return multiDimIdx;
 }
 
 __device__ int *linIdxToFiveDimIdx(int idx, int size_i, int size_j, int size_k, int size_l) {
@@ -158,16 +190,19 @@ __device__ int *linIdxToFiveDimIdx(int idx, int size_i, int size_j, int size_k, 
 
 	//	Get fifth dim
 	idx -= fiveDimIdx[3];
-	fiveDimIdx[4] = idx / size_l;
+	fiveDimIdx[4] = (idx / size_l);
 
 	return fiveDimIdx;
 }
 
-__global__ void popDict(double **dict, const double *times, const double *artConc, const double *pvConc, const int n, const double *AF, const double *MTT, const double *DV, const double *t1, const double *t2) {
-	int *fiveDimIdx = linIdxToFiveDimIdx(threadIdx.x, 21, 21, 21, 26);
-	double *disc_out = new double[n];
-	disc_out = disc(times, artConc, pvConc, n, AF[fiveDimIdx[0]], MTT[fiveDimIdx[1]], DV[fiveDimIdx[2]], t1[fiveDimIdx[3]], t2[fiveDimIdx[4]]);
-	dict[threadIdx.x] = disc_out;
+__global__ void popDict(double *dict, const double *times, const double *artConc, const double *pvConc, const int n, const double *AF, const double *MTT, const double *DV, const double *t1, const double *t2) {
+	//int *fiveDimIdx = linIdxToFiveDimIdx(blockIdx.x, 21, 21, 21, 26);
+
+	int linIdx = fiveDimIdxToLinIdx(blockIdx.x, 21, blockIdx.y, 21, blockIdx.z, 21, threadIdx.x, 26, threadIdx.y);
+	double *disc_out = disc(times, artConc, pvConc, n, AF[blockIdx.x], MTT[blockIdx.y], DV[blockIdx.z], t1[threadIdx.x], t2[threadIdx.y]);
+	for (int i = 0; i < n; i++) {
+		dict[linIdx * n + i] = disc_out[i];
+	}
 }
 
 int main()
@@ -184,13 +219,13 @@ int main()
 	double *Cb_plasma = artConc(AF);
 	double *Cp_plasma = pvConc(PV);
 	
-	double *AF_range = linspace(0.0f, 100.0f, 21);
-	double *MTT_range = linspace(0.0f, 100.0f, 21);
-	double *DV_range = linspace(0.0f, 100.0f, 21);
+	double *AF_range = linspace(1.0f, 100.0f, 21);
+	double *MTT_range = linspace(1.0f, 100.0f, 21);
+	double *DV_range = linspace(1.0f, 100.0f, 21);
 	double *t1_range = linspace(0.0f, 5.0f, 26);
 	double *t2_range = linspace(0.0f, 5.0f, 26);
 
-	double **dict = (double **)malloc(sizeof(double *) * 21 * 21 * 21 * 26 * 26);
+	double *dict = (double *)malloc(sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
 
 	double *d_timesData;
 	cudaMalloc(&d_timesData, sizeof(double) * n);
@@ -214,49 +249,23 @@ int main()
 	cudaMemcpy(d_t1_range, t1_range, sizeof(double) * 26, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_t2_range, t2_range, sizeof(double) * 26, cudaMemcpyHostToDevice);
 	
-	double **d_dict;
-	cudaMalloc(&d_dict, sizeof(double *) * 21 * 21 * 21 * 26 * 26);
+	double *d_dict;
+	cudaMalloc(&d_dict, sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
+	
+	printf("launching kernel\n");
+	popDict<<< dim3(21, 21, 21), dim3(26, 26) >>>(d_dict, d_timesData, d_Cb_plasma, d_Cp_plasma, n, d_AF_range, d_MTT_range, d_DV_range, d_t1_range, d_t2_range);
 
-	popDict<<< 1, 21 * 21 * 21 * 26 * 26 >>>(d_dict, d_timesData, d_Cb_plasma, d_Cp_plasma, n, d_AF_range, d_MTT_range, d_DV_range, d_t1_range, d_t2_range);
+	cudaMemcpy(dict, d_dict, sizeof(double) * 21 * 21 * 21 * 26 * 26 * n, cudaMemcpyDeviceToHost);
 
-	cudaMemcpy(dict, d_dict, sizeof(double *) * 21 * 21 * 21 * 26 * 26, cudaMemcpyDeviceToHost);
-	double *linearDict = (double *)malloc(sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
-	for (int i = 0; i < 21 * 21 * 21 * 26 * 26; i++) {
-		double *timeSeries = dict[i];
-		for (int j = 0; j < n; j++) {
-			double temp = timeSeries[j];
-			linearDict[i * n + j] = temp;
-		}
-	}
-
-	mxArray *linearDictMatrix = mxCreateDoubleMatrix(21 * 21 * 21 * 26 * 26, n, mxREAL);
-	matPutMatrixInFile("Dictionary.mat", "Dictionary", linearDictMatrix);
-
-	//const int arraySize = 5;
-    //const int a[arraySize] = { 1, 2, 3, 4, 5 };
-    //const int b[arraySize] = { 10, 20, 30, 40, 50 };
-    //int c[arraySize] = { 0 };
-
-    //// Add vectors in parallel.
-    //cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
-    //if (cudaStatus != cudaSuccess) {
-    //    fprintf(stderr, "addWithCuda failed!");
-    //    return 1;
-    //}
-
-    //printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
-    //    c[0], c[1], c[2], c[3], c[4]);
-
-    //// cudaDeviceReset must be called before exiting in order for profiling and
-    //// tracing tools such as Nsight and Visual Profiler to show complete traces.
-    //cudaStatus = cudaDeviceReset();
-    //if (cudaStatus != cudaSuccess) {
-    //    fprintf(stderr, "cudaDeviceReset failed!");
-    //    return 1;
-    //}
+	printf("\n\ncopying to dict\n");
+	printf("%f\n", dict[6223408]);
+	//	dictMatrix is the transpose of what I want because I haven't converted to row major
+	//mxArray *dictMatrix = mxCreateDoubleMatrix(n, 21 * 21 * 21 * 26 * 26, mxREAL);
+	//mxSetPr(dictMatrix, dict);
+	//matPutMatrixInFile("Dictionary.mat", "Dictionary", dictMatrix);
 
 	//	Pause
-	//	getchar();
+	getchar();
 
 	cudaFree(d_dict);
 	cudaFree(d_timesData);
@@ -269,84 +278,4 @@ int main()
 	cudaFree(d_t2_range);
 
     return 0;
-}
-
-// Helper function for using CUDA to add vectors in parallel.
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
-{
-    int *dev_a = 0;
-    int *dev_b = 0;
-    int *dev_c = 0;
-    cudaError_t cudaStatus;
-
-    // Choose which GPU to run on, change this on a multi-GPU system.
-    cudaStatus = cudaSetDevice(0);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-        goto Error;
-    }
-
-    // Allocate GPU buffers for three vectors (two input, one output)    .
-    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    // Copy input vectors from host memory to GPU buffers.
-    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    // Launch a kernel on the GPU with one thread for each element.
-    //addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
-
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
-    
-    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-    // any errors encountered during the launch.
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-        goto Error;
-    }
-
-    // Copy output vector from GPU buffer to host memory.
-    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-Error:
-    cudaFree(dev_c);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
-    
-    return cudaStatus;
 }
