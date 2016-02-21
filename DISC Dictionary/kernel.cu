@@ -9,9 +9,20 @@
 #include <stdio.h>
 #include <string.h>
 
+#define cudaCheckErrors(msg) \
+    do { \
+        cudaError_t __err = cudaGetLastError(); \
+        if (__err != cudaSuccess) { \
+            fprintf(stderr, "Fatal error: %s (%s at %s:%d)\n", \
+                msg, cudaGetErrorString(__err), \
+                __FILE__, __LINE__); \
+            fprintf(stderr, "*** FAILED - ABORTING\n"); \
+		        } \
+	    } while (0)
+
 //	Constants
 const double ALPHA = 15.0f * M_PI / 180.0f;
-const int BASE_FRAME = 3;
+const int BASE_FRAME = 2;
 const double TR = 4.54f;
 const double T10b = 1.8f * 1000.0f;
 const double T10p = 1.8f * 1000.0f;
@@ -28,11 +39,11 @@ double *artConc(const mxArray *artFrac) {
 	int numRows = mxGetM(artFrac);
 	const double *artFracData = mxGetPr(artFrac);
 	double S0b = artFracData[BASE_FRAME] * ((1.0f - exp(-1.0f * R10b * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10b * TR)) / sin(ALPHA));
-	
+
 	//	Calculate R1b
 	double *R1b = new double[numRows];
 	for (int i = 0; i < numRows; i++) {
-		R1b[i] = log10( ( (S0b * sin(ALPHA)) - (artFracData[i] * cos(ALPHA)) ) / (S0b * sin(ALPHA) - artFracData[i]) ) / TR;
+		R1b[i] = log( ( (S0b * sin(ALPHA)) - (artFracData[i] * cos(ALPHA)) ) / (S0b * sin(ALPHA) - artFracData[i]) ) / TR;
 	}
 	
 	//	Calculate Cb_artery
@@ -59,7 +70,7 @@ double *pvConc(const mxArray *pv) {
 	//	Calculate R1p
 	double *R1p = new double[numRows];
 	for (int i = 0; i < numRows; i++) {
-		R1p[i] = log10( ( (S0p * sin(ALPHA)) - (pvData[i] * cos(ALPHA)) ) / (S0p * sin(ALPHA) - pvData[i]) ) / TR;
+		R1p[i] = log( ( (S0p * sin(ALPHA)) - (pvData[i] * cos(ALPHA)) ) / (S0p * sin(ALPHA) - pvData[i]) ) / TR;
 	}
 
 	//	Calculate Cp_artery
@@ -86,7 +97,7 @@ double *clearance(const mxArray *liver) {
 	//	Calculate R1L
 	double *R1L = new double[numRows];
 	for (int i = 0; i < numRows; i++) {
-		R1L[i] = log10(((S0L * sin(ALPHA)) - (liverData[i] * cos(ALPHA))) / (S0L * sin(ALPHA) - liverData[i])) / TR;
+		R1L[i] = log(((S0L * sin(ALPHA)) - (liverData[i] * cos(ALPHA))) / (S0L * sin(ALPHA) - liverData[i])) / TR;
 	}
 
 	//	Calculate CL
@@ -98,16 +109,16 @@ double *clearance(const mxArray *liver) {
 	return CL;
 }
 
-__device__ double *disc(const double *times, const double *artConc, const double *pvConc, const int n, const double AF, const double MTT, const double DV, const double t1, const double t2) {
+__device__ double *disc(const double *times, const double *artConc, const double *pvConc, const int n, const double AF, const double DV, const double MTT, const double t1, const double t2) {
 	double k1a = AF * DV / MTT;
 	double k1p = DV * (1.0f - AF) / MTT;
 	double k2 = 1.0f / MTT;
 	double dt = times[1] - times[0];
-	double *C = new double[n];
+	double *C = (double *)malloc(sizeof(double) * n);
 
 	for (int i = 0; i < n; i++) {
 		double sum = 0.0f;
-		for (int j = 0; j < i; j++) {
+		for (int j = 0; j <= i; j++) {
 			double sum1 = 0.0f;
 			if (round(j - t1 * 1000.0f) > 0.0f) {
 				sum1 += k1a * artConc[(int)round(j - t1 * 1000.0f)];
@@ -147,6 +158,10 @@ __device__ int multiDimIdxToLinIdx(int *idxs, int *sizes, int nDims) {
 }
 
 __device__ int fiveDimIdxToLinIdx(int i, int size_i, int j, int size_j, int k, int size_k, int l, int size_l, int m) {
+	return i + (j * size_i) + (k * size_i * size_j) + (l * size_i * size_j *size_k) + (m * size_i * size_j * size_k * size_l);
+}
+
+int fiveDimIdxToLinIdxDev(int i, int size_i, int j, int size_j, int k, int size_k, int l, int size_l, int m) {
 	return i + (j * size_i) + (k * size_i * size_j) + (l * size_i * size_j *size_k) + (m * size_i * size_j * size_k * size_l);
 }
 
@@ -195,19 +210,69 @@ __device__ int *linIdxToFiveDimIdx(int idx, int size_i, int size_j, int size_k, 
 	return fiveDimIdx;
 }
 
-__global__ void popDict(double *dict, const double *times, const double *artConc, const double *pvConc, const int n, const double *AF, const double *MTT, const double *DV, const double *t1, const double *t2) {
+__global__ void popDict(double *dict, const double *times, const double *artConc, const double *pvConc, const int n, const double *AF, const double *DV, const double *MTT, const double *t1, const double *t2) {
 	//int *fiveDimIdx = linIdxToFiveDimIdx(blockIdx.x, 21, 21, 21, 26);
 
+	const double AFx = AF[blockIdx.x];
+	const double DVx = DV[blockIdx.y];
+	const double MTTx = MTT[blockIdx.z];
+	const double t1x = t1[threadIdx.x];
+	const double t2x = t2[threadIdx.y];
 	int linIdx = fiveDimIdxToLinIdx(blockIdx.x, 21, blockIdx.y, 21, blockIdx.z, 21, threadIdx.x, 26, threadIdx.y);
-	double *disc_out = disc(times, artConc, pvConc, n, AF[blockIdx.x], MTT[blockIdx.y], DV[blockIdx.z], t1[threadIdx.x], t2[threadIdx.y]);
+	
+	double k1a = AFx * DVx / MTTx;
+	double k1p = DVx * (1.0f - AFx) / MTTx;
+	double k2 = 1.0f / MTTx;
+	double dt = times[1] - times[0];
+
+	for (int i = 0; i < n; i++) {
+		double sum = 0.0f;
+		for (int j = 0; j <= i; j++) {
+			double sum1 = 0.0f;
+			if (round(j - t1x * 1000.0f) > 0.0f) {
+				sum1 += k1a * artConc[(int)round(j - t1x * 1000.0f)];
+			}
+
+			if (round(j - t2x) > 0.0f) {
+				sum1 += k1p * pvConc[(int)round(j - t2x)];
+			}
+
+			sum += sum1 * exp(-1.0f * k2 * (i - j) * dt) * dt;
+		}
+		dict[linIdx * n + i] = sum;
+	}
+	
+	/*double k1a = AF[blockIdx.x] * DV[blockIdx.y] / MTT[blockIdx.z];
+	double k1p = DV[blockIdx.y] * (1.0f - AF[blockIdx.x]) / MTT[blockIdx.z];
+	double k2 = 1.0f / MTT[blockIdx.z];
+	double dt = times[1] - times[0];
+
+	for (int i = 0; i < n; i++) {
+		double sum = 0.0f;
+		for (int j = 0; j <= i; j++) {
+			double sum1 = 0.0f;
+			if (round(j - t1[threadIdx.x] * 1000.0f) > 0.0f) {
+				sum1 += k1a * artConc[(int)round(j - t1[threadIdx.x] * 1000.0f)];
+			}
+
+			if (round(j - t2[threadIdx.y]) > 0.0f) {
+				sum1 += k1p * pvConc[(int)round(j - t2[threadIdx.y])];
+			}
+
+			sum += sum1 * exp(-1.0f * k2 * (i - j) * dt) * dt;
+		}
+		dict[linIdx * n + i] = sum;
+	}*/
+	
+	/*double *disc_out = disc(times, artConc, pvConc, n, AF[blockIdx.x], MTT[blockIdx.y], DV[blockIdx.z], t1[threadIdx.x], t2[threadIdx.y]);
 	for (int i = 0; i < n; i++) {
 		dict[linIdx * n + i] = disc_out[i];
-	}
+	}*/
 }
 
 int main()
 {
-	mxArray *allts = matGetMatrixInFile("data.mat", "allts");
+	mxArray *allts = matGetMatrixInFile("data2.mat", "allts");
 	mxArray *times = matGetColInMatrix(allts, 0);
 	mxArray *AF = matGetColInMatrix(allts, 1);
 	mxArray *PV = matGetColInMatrix(allts, 2);
@@ -219,13 +284,15 @@ int main()
 	double *Cb_plasma = artConc(AF);
 	double *Cp_plasma = pvConc(PV);
 	
-	double *AF_range = linspace(1.0f, 100.0f, 21);
+	double *AF_range = linspace(0.01f, 1.0f, 21);
+	double *DV_range = linspace(0.01f, 1.0f, 21);
 	double *MTT_range = linspace(1.0f, 100.0f, 21);
-	double *DV_range = linspace(1.0f, 100.0f, 21);
-	double *t1_range = linspace(0.0f, 5.0f, 26);
-	double *t2_range = linspace(0.0f, 5.0f, 26);
+	double *t1_range = linspace(0.001f, 0.05f, 26);
+	double *t2_range = linspace(0.001f, 0.05f, 26);
 
-	double *dict = (double *)malloc(sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
+	printf("Mallocing...\n");
+	double *dict = (double *)mxMalloc(sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
+	printf("Done mallocing.\n");
 
 	double *d_timesData;
 	cudaMalloc(&d_timesData, sizeof(double) * n);
@@ -237,43 +304,48 @@ int main()
 	cudaMemcpy(d_Cb_plasma, Cb_plasma, sizeof(double) * n, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_Cp_plasma, Cp_plasma, sizeof(double) * n, cudaMemcpyHostToDevice);
 
-	double *d_AF_range, *d_MTT_range, *d_DV_range, *d_t1_range, *d_t2_range;
+	double *d_AF_range, *d_DV_range, *d_MTT_range, *d_t1_range, *d_t2_range;
 	cudaMalloc(&d_AF_range, sizeof(double) * 21);
-	cudaMalloc(&d_MTT_range, sizeof(double) * 21);
 	cudaMalloc(&d_DV_range, sizeof(double) * 21);
+	cudaMalloc(&d_MTT_range, sizeof(double) * 21);
 	cudaMalloc(&d_t1_range, sizeof(double) * 26);
 	cudaMalloc(&d_t2_range, sizeof(double) * 26);
 	cudaMemcpy(d_AF_range, AF_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_MTT_range, MTT_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_DV_range, DV_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_MTT_range, MTT_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_t1_range, t1_range, sizeof(double) * 26, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_t2_range, t2_range, sizeof(double) * 26, cudaMemcpyHostToDevice);
 	
 	double *d_dict;
 	cudaMalloc(&d_dict, sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
+	cudaCheckErrors("cudaMalloc d_dict");
 	
-	printf("launching kernel\n");
-	popDict<<< dim3(21, 21, 21), dim3(26, 26) >>>(d_dict, d_timesData, d_Cb_plasma, d_Cp_plasma, n, d_AF_range, d_MTT_range, d_DV_range, d_t1_range, d_t2_range);
+	printf("Launching kernel...\n");
+	popDict <<< dim3(21, 21, 21), dim3(26, 26) >>>(d_dict, d_timesData, d_Cb_plasma, d_Cp_plasma, n, d_AF_range, d_DV_range, d_MTT_range, d_t1_range, d_t2_range);
+	cudaCheckErrors("launch kernel fail");
+	cudaDeviceSynchronize();
+	cudaCheckErrors("cuda sync fail");
+	printf("Kernel finished.\n");
 
 	cudaMemcpy(dict, d_dict, sizeof(double) * 21 * 21 * 21 * 26 * 26 * n, cudaMemcpyDeviceToHost);
+	cudaCheckErrors("cudaMemcpy device to host");
+	cudaFree(d_dict);
 
-	printf("\n\ncopying to dict\n");
-	printf("%f\n", dict[6223408]);
-	//	dictMatrix is the transpose of what I want because I haven't converted to row major
-	//mxArray *dictMatrix = mxCreateDoubleMatrix(n, 21 * 21 * 21 * 26 * 26, mxREAL);
-	//mxSetPr(dictMatrix, dict);
-	//matPutMatrixInFile("Dictionary.mat", "Dictionary", dictMatrix);
+	mxArray *dictMatrix = mxCreateDoubleMatrix(21 * 21 * 21 * 26 * 26, n, mxREAL);
+	mxSetPr(dictMatrix, dict);
+	printf("Saving dictionary...\n");
+	hdf5PutArrayInFile("HDF5_Dictionary.mat", "Dictionary", dictMatrix);
+	printf("Done saving dictionary.\n");
 
 	//	Pause
 	getchar();
 
-	cudaFree(d_dict);
 	cudaFree(d_timesData);
 	cudaFree(d_Cb_plasma);
 	cudaFree(d_Cp_plasma);
 	cudaFree(d_AF_range);
-	cudaFree(d_MTT_range);
 	cudaFree(d_DV_range);
+	cudaFree(d_MTT_range);
 	cudaFree(d_t1_range);
 	cudaFree(d_t2_range);
 
