@@ -24,14 +24,14 @@
 const double ALPHA = 15.0f * M_PI / 180.0f;
 const int BASE_FRAME = 2;
 const double TR = 4.54f;
-const double T10b = 1.8f * 1000.0f;
-const double T10p = 1.8f * 1000.0f;
-const double T10L = 0.747f * 1000.0f;
+const double T10b = 1.664f * 1000.0f;
+const double T10p = 1.584f * 1000.0f;
+const double T10L = 0.8f * 1000.0f;
 const double R10b = 1.0f / T10b;
 const double R10p = 1.0f / T10p;
 const double R10L = 1.0f / T10L;
 const double HCT = 0.4f;
-const double RELAXIVITY = 4.5f;
+const double RELAXIVITY = 6.3f;
 
 
 double *artConc(const mxArray *artFrac) {
@@ -287,8 +287,8 @@ int main()
 	double *AF_range = linspace(0.01f, 1.0f, 21);
 	double *DV_range = linspace(0.01f, 1.0f, 21);
 	double *MTT_range = linspace(1.0f, 100.0f, 21);
-	double *t1_range = linspace(0.001f, 0.05f, 26);
-	double *t2_range = linspace(0.001f, 0.05f, 26);
+	double *t1_range = linspace(0.001f, 0.02f, 26);
+	double *t2_range = linspace(0.001f, 0.02f, 26);
 
 	printf("Mallocing...\n");
 	double *dict = (double *)mxMalloc(sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
