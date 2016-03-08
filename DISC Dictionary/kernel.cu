@@ -22,8 +22,9 @@
 
 //	Constants
 const double ALPHA = 15.0f * M_PI / 180.0f;
-const int BASE_FRAME = 2;
-const double TR = 4.54f;
+const int BASE_FRAME = 1;
+const int FRAMES = 4;
+const double TR = 5.12f;
 const double T10b = 1.664f * 1000.0f;
 const double T10p = 1.584f * 1000.0f;
 const double T10L = 0.8f * 1000.0f;
@@ -34,11 +35,17 @@ const double HCT = 0.4f;
 const double RELAXIVITY = 6.3f;
 
 
-double *artConc(const mxArray *artFrac) {
+double *artConc(const mxArray *artFrac, const mxArray *pv) {
 	//	Calculate S0b
 	int numRows = mxGetM(artFrac);
 	const double *artFracData = mxGetPr(artFrac);
-	double S0b = artFracData[BASE_FRAME] * ((1.0f - exp(-1.0f * R10b * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10b * TR)) / sin(ALPHA));
+	const double *pvData = mxGetPr(pv);
+	float m = 0.0f;
+	for (int i = 0; i < FRAMES; i++) {
+		m += pvData[BASE_FRAME + i];
+	}
+	m /= (float)FRAMES;
+	double S0b = m * ((1.0f - exp(-1.0f * R10b * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10b * TR)) / sin(ALPHA));
 
 	//	Calculate R1b
 	double *R1b = new double[numRows];
@@ -58,6 +65,11 @@ double *artConc(const mxArray *artFrac) {
 		Cb_plasma[i] = Cb_artery[i] / (1.0f - HCT);
 	}
 
+	//	Zero everything before the base frame
+	for (int i = 0; i <= BASE_FRAME; i++) {
+		Cb_plasma[i] = 0.0f;
+	}
+
 	return Cb_plasma;
 }
 
@@ -65,7 +77,12 @@ double *pvConc(const mxArray *pv) {
 	//	Calculate S0p
 	int numRows = mxGetM(pv);
 	const double *pvData = mxGetPr(pv);
-	double S0p = pvData[BASE_FRAME] * ((1.0f - exp(-1.0f * R10p * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10p * TR)) / sin(ALPHA));
+	float m = 0.0f;
+	for (int i = 0; i < FRAMES; i++) {
+		m += pvData[BASE_FRAME + i];
+	}
+	m /= (float)FRAMES;
+	double S0p = m * ((1.0f - exp(-1.0f * R10p * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10p * TR)) / sin(ALPHA));
 
 	//	Calculate R1p
 	double *R1p = new double[numRows];
@@ -85,6 +102,11 @@ double *pvConc(const mxArray *pv) {
 		Cp_plasma[i] = Cp_artery[i] / (1.0f - HCT);
 	}
 
+	//	Zero everything before the base frame
+	for (int i = 0; i <= BASE_FRAME; i++) {
+		Cp_plasma[i] = 0.0f;
+	}
+
 	return Cp_plasma;
 }
 
@@ -92,7 +114,12 @@ double *clearance(const mxArray *liver) {
 	//	Calculate S0L
 	int numRows = mxGetM(liver);
 	const double *liverData = mxGetPr(liver);
-	double S0L = liverData[BASE_FRAME] * ((1.0f - exp(-1.0f * R10L * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10L * TR)) / sin(ALPHA));
+	float m = 0.0f;
+	for (int i = 0; i < FRAMES; i++) {
+		m += liverData[BASE_FRAME + i];
+	}
+	m /= (float)FRAMES;
+	double S0L = m * ((1.0f - exp(-1.0f * R10L * TR) * cos(ALPHA)) / (1.0f - exp(-1.0f * R10L * TR)) / sin(ALPHA));
 	
 	//	Calculate R1L
 	double *R1L = new double[numRows];
@@ -103,7 +130,7 @@ double *clearance(const mxArray *liver) {
 	//	Calculate CL
 	double *CL = new double[numRows];
 	for (int i = 0; i < numRows; i++) {
-		CL[i] = (R1L[i] - R10L) * 1000.0f / RELAXIVITY * 0.2627f;
+		CL[i] = (R1L[i] - R10L) * 1000.0f / RELAXIVITY;
 	}
 
 	return CL;
@@ -233,8 +260,8 @@ __global__ void popDict(double *dict, const double *times, const double *artConc
 				sum1 += k1a * artConc[(int)round(j - t1x * 1000.0f)];
 			}
 
-			if (round(j - t2x) > 0.0f) {
-				sum1 += k1p * pvConc[(int)round(j - t2x)];
+			if (round(j - t2x * 1000.0f) > 0.0f) {
+				sum1 += k1p * pvConc[(int)round(j - t2x * 1000.0f)];
 			}
 
 			sum += sum1 * exp(-1.0f * k2 * (i - j) * dt) * dt;
@@ -281,7 +308,7 @@ int main()
 	int n = mxGetM(times);
 
 	double *timesData = mxGetPr(times);
-	double *Cb_plasma = artConc(AF);
+	double *Cb_plasma = artConc(AF, PV);
 	double *Cp_plasma = pvConc(PV);
 	
 	double *AF_range = linspace(0.01f, 1.0f, 21);
