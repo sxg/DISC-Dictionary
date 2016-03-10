@@ -23,7 +23,7 @@
 //	Constants
 const double ALPHA = 15.0f * M_PI / 180.0f;
 const int BASE_FRAME = 1;
-const int FRAMES = 4;
+const int FRAMES = 5;
 const double TR = 5.12f;
 const double T10b = 1.664f * 1000.0f;
 const double T10p = 1.584f * 1000.0f;
@@ -299,7 +299,7 @@ __global__ void popDict(double *dict, const double *times, const double *artConc
 
 int main()
 {
-	mxArray *allts = matGetMatrixInFile("data2.mat", "allts");
+	mxArray *allts = matGetMatrixInFile("data.mat", "allts");
 	mxArray *times = matGetColInMatrix(allts, 0);
 	mxArray *AF = matGetColInMatrix(allts, 1);
 	mxArray *PV = matGetColInMatrix(allts, 2);
