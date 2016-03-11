@@ -136,23 +136,23 @@ double *clearance(const mxArray *liver) {
 	return CL;
 }
 
-__device__ double *disc(const double *times, const double *artConc, const double *pvConc, const int n, const double AF, const double DV, const double MTT, const double t1, const double t2) {
+double *disc(const double *times, const double *artConc, const double *pvConc, const int n, const double AF, const double DV, const double MTT, const double t1, const double t2) {
 	double k1a = AF * DV / MTT;
 	double k1p = DV * (1.0f - AF) / MTT;
 	double k2 = 1.0f / MTT;
 	double dt = times[1] - times[0];
 	double *C = (double *)malloc(sizeof(double) * n);
 
-	for (int i = 0; i < n; i++) {
+	for (int i = 1; i <= n; i++) {
 		double sum = 0.0f;
-		for (int j = 0; j <= i; j++) {
+		for (int j = 1; j <= i; j++) {
 			double sum1 = 0.0f;
 			if (round(j - t1 * 1000.0f) > 0.0f) {
 				sum1 += k1a * artConc[(int)round(j - t1 * 1000.0f)];
 			}
 
-			if (round(j - t2) > 0.0f) {
-				sum1 += k1p * pvConc[(int)round(j - t2)];
+			if (round(j - t2 * 1000.0f) > 0.0f) {
+				sum1 += k1p * pvConc[(int)round(j - t2 * 1000.0f)];
 			}
 
 			sum += sum1 * exp(-1.0f * k2 * (i - j) * dt) * dt;
@@ -237,15 +237,13 @@ __device__ int *linIdxToFiveDimIdx(int idx, int size_i, int size_j, int size_k, 
 	return fiveDimIdx;
 }
 
-__global__ void popDict(double *dict, const double *times, const double *artConc, const double *pvConc, const int n, const double *AF, const double *DV, const double *MTT, const double *t1, const double *t2) {
-	//int *fiveDimIdx = linIdxToFiveDimIdx(blockIdx.x, 21, 21, 21, 26);
-
+__global__ void popDict(double *dict, const double *times, const double *artConc, const double *pvConc, const int n, const double *AF, const int AF_length, const double *DV, const double DV_length, const double *MTT, const double MTT_length, const double *t1, const double t1_length, const double *t2, const double t2_length) {
 	const double AFx = AF[blockIdx.x];
 	const double DVx = DV[blockIdx.y];
 	const double MTTx = MTT[blockIdx.z];
 	const double t1x = t1[threadIdx.x];
 	const double t2x = t2[threadIdx.y];
-	int linIdx = fiveDimIdxToLinIdx(blockIdx.x, 21, blockIdx.y, 21, blockIdx.z, 21, threadIdx.x, 26, threadIdx.y);
+	int linIdx = fiveDimIdxToLinIdx(blockIdx.x, AF_length, blockIdx.y, DV_length, blockIdx.z, MTT_length, threadIdx.x, t1_length, threadIdx.y);
 	
 	double k1a = AFx * DVx / MTTx;
 	double k1p = DVx * (1.0f - AFx) / MTTx;
@@ -311,14 +309,30 @@ int main()
 	double *Cb_plasma = artConc(AF, PV);
 	double *Cp_plasma = pvConc(PV);
 	
-	double *AF_range = linspace(0.01f, 1.0f, 21);
+	/*double *AF_range = linspace(0.01f, 1.0f, 21);
 	double *DV_range = linspace(0.01f, 1.0f, 21);
 	double *MTT_range = linspace(1.0f, 100.0f, 21);
 	double *t1_range = linspace(0.001f, 0.02f, 26);
-	double *t2_range = linspace(0.001f, 0.02f, 26);
+	double *t2_range = linspace(0.001f, 0.02f, 26);*/
+
+	mxArray *AF_vector = matGetMatrixInFile("AF.mat", "AF");
+	mxArray *DV_vector = matGetMatrixInFile("DV.mat", "DV");
+	mxArray *MTT_vector = matGetMatrixInFile("MTT.mat", "MTT");
+	mxArray *t1_vector = matGetMatrixInFile("t1.mat", "t1");
+	mxArray *t2_vector = matGetMatrixInFile("t2.mat", "t2");
+	const int AF_length = mxGetM(AF_vector);
+	const int DV_length = mxGetM(DV_vector);
+	const int MTT_length = mxGetM(MTT_vector);
+	const int t1_length = mxGetM(t1_vector);
+	const int t2_length = mxGetM(t2_vector);
+	const double *AF_range = mxGetPr(AF_vector);
+	const double *DV_range = mxGetPr(DV_vector);
+	const double *MTT_range = mxGetPr(MTT_vector);
+	const double *t1_range = mxGetPr(t1_vector);
+	const double *t2_range = mxGetPr(t2_vector);
 
 	printf("Mallocing...\n");
-	double *dict = (double *)mxMalloc(sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
+	double *dict = (double *)mxMalloc(sizeof(double) * AF_length * DV_length * MTT_length * t1_length * t2_length * n);
 	printf("Done mallocing.\n");
 
 	double *d_timesData;
@@ -332,33 +346,33 @@ int main()
 	cudaMemcpy(d_Cp_plasma, Cp_plasma, sizeof(double) * n, cudaMemcpyHostToDevice);
 
 	double *d_AF_range, *d_DV_range, *d_MTT_range, *d_t1_range, *d_t2_range;
-	cudaMalloc(&d_AF_range, sizeof(double) * 21);
-	cudaMalloc(&d_DV_range, sizeof(double) * 21);
-	cudaMalloc(&d_MTT_range, sizeof(double) * 21);
-	cudaMalloc(&d_t1_range, sizeof(double) * 26);
-	cudaMalloc(&d_t2_range, sizeof(double) * 26);
-	cudaMemcpy(d_AF_range, AF_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_DV_range, DV_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_MTT_range, MTT_range, sizeof(double) * 21, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_t1_range, t1_range, sizeof(double) * 26, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_t2_range, t2_range, sizeof(double) * 26, cudaMemcpyHostToDevice);
+	cudaMalloc(&d_AF_range, sizeof(double) * AF_length);
+	cudaMalloc(&d_DV_range, sizeof(double) * DV_length);
+	cudaMalloc(&d_MTT_range, sizeof(double) * MTT_length);
+	cudaMalloc(&d_t1_range, sizeof(double) * t1_length);
+	cudaMalloc(&d_t2_range, sizeof(double) * t2_length);
+	cudaMemcpy(d_AF_range, AF_range, sizeof(double) * AF_length, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_DV_range, DV_range, sizeof(double) * DV_length, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_MTT_range, MTT_range, sizeof(double) * MTT_length, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_t1_range, t1_range, sizeof(double) * t1_length, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_t2_range, t2_range, sizeof(double) * t2_length, cudaMemcpyHostToDevice);
 	
 	double *d_dict;
-	cudaMalloc(&d_dict, sizeof(double) * 21 * 21 * 21 * 26 * 26 * n);
+	cudaMalloc(&d_dict, sizeof(double) * AF_length * DV_length * MTT_length * t1_length * t2_length * n);
 	cudaCheckErrors("cudaMalloc d_dict");
 	
 	printf("Launching kernel...\n");
-	popDict <<< dim3(21, 21, 21), dim3(26, 26) >>>(d_dict, d_timesData, d_Cb_plasma, d_Cp_plasma, n, d_AF_range, d_DV_range, d_MTT_range, d_t1_range, d_t2_range);
+	popDict <<< dim3(AF_length, DV_length, MTT_length), dim3(t1_length, t2_length) >>>(d_dict, d_timesData, d_Cb_plasma, d_Cp_plasma, n, d_AF_range, AF_length, d_DV_range, DV_length, d_MTT_range, MTT_length, d_t1_range, t1_length, d_t2_range, t2_length);
 	cudaCheckErrors("launch kernel fail");
 	cudaDeviceSynchronize();
 	cudaCheckErrors("cuda sync fail");
 	printf("Kernel finished.\n");
 
-	cudaMemcpy(dict, d_dict, sizeof(double) * 21 * 21 * 21 * 26 * 26 * n, cudaMemcpyDeviceToHost);
+	cudaMemcpy(dict, d_dict, sizeof(double) * AF_length * DV_length * MTT_length * t1_length * t2_length * n, cudaMemcpyDeviceToHost);
 	cudaCheckErrors("cudaMemcpy device to host");
 	cudaFree(d_dict);
 
-	mxArray *dictMatrix = mxCreateDoubleMatrix(21 * 21 * 21 * 26 * 26, n, mxREAL);
+	mxArray *dictMatrix = mxCreateDoubleMatrix(AF_length * DV_length * MTT_length * t1_length * t2_length, n, mxREAL);
 	mxSetPr(dictMatrix, dict);
 	printf("Saving dictionary...\n");
 	hdf5PutArrayInFile("HDF5_Dictionary.mat", "Dictionary", dictMatrix);
